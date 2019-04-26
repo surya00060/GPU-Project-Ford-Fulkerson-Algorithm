@@ -1,4 +1,7 @@
 // C++ program for implementation of Ford Fulkerson algorithm 
+// Reference: https://www.geeksforgeeks.org/ford-fulkerson-algorithm-for-maximum-flow-problem/
+// Code modified as required in our input format
+
 #include <iostream> 
 #include <limits.h> 
 #include <string.h> 
