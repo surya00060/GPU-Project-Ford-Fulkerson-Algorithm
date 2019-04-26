@@ -1,8 +1,8 @@
-#include <bits/stdc++.h>
-#include <chrono>
-using namespace std;
-using namespace std::chrono;
+// Implementation of serial code in cpp used for profiling the performance on cpu 
+// and for comparing the parallel implementations.
 
+#include <bits/stdc++.h>
+using namespace std;
 #define vi vector<int>
 #define vvi vector<vector<int>>
 
@@ -98,7 +98,6 @@ int fordFulkerson(vvi &capacity, int n, int s, int t)
                 flow[x][y] -= t_potential;
             }
 
-
             x = y;
         }
     }
@@ -116,18 +115,6 @@ int main()
         cin >> u >> v >> w;
         capacity[u][v] = w; 
     }
-    
-    long avg_time = 0;
-    int ans =0;
-    for( int i = 0 ; i < 10; ++i)
-    {
-        auto start = high_resolution_clock::now();
-	    ans = fordFulkerson(capacity, n, 0, n-1);
-        auto stop = high_resolution_clock::now(); 
-        auto duration = duration_cast<microseconds>(stop - start);
-        avg_time += duration.count(); 
-        cout<<duration.count()<<endl;
-    }
-    cout<<"Answer: "<<ans<<endl;
-    cout<<"Time taken in microseconds: "<<avg_time/10<< endl;  
+
+	cout << fordFulkerson(capacity, n, 0, n-1) << '\n'; 
 }
