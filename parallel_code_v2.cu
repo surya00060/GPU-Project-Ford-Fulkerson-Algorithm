@@ -1,4 +1,5 @@
 // Uses "two arrays for label" so that label of v won't get updated before it's block starts executing. 
+// The arrays are interchageably passed as arguments to the kernel to avoid an extra memcpy of label.
 // This is an improvement from the previous version as there aren't multiple kernel calls for each source,
 // they have been made different blocks of the same kernel and hence can execute parallely.
 
@@ -30,6 +31,8 @@ __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned
     return hash_value;
 }
 
+// The following functions return the corresponding field 
+// in the hashed value using bitwise operations.
 __host__ __device__ int potential(ll hash_value)
 {
     return hash_value>>13;
@@ -56,9 +59,9 @@ __host__ __device__ int direction(ll hash_value)
 }
 
 // Note: Using the same u potential multiple nodes can be assigned potentials, but eventually no more than one of them will be in the path.
-// There is frequent context switch between cpu and gpu, try improving that by moving the loop inside kernel
-// Some of the device arrays are constants --- Check if improvement possible if they are changed accordingly
+// There is frequent context switch between cpu and gpu, try improving that by moving the loop inside kernel -- dynamic parallelism performed.
 
+// Kernel tries to expand the frontier by one step ... frontier is the collection of nodes who had just been labelled in the previous iteration.
 __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll *d_new_label, int *d_flag, int n)
 {
     int u = blockIdx.x, v = threadIdx.x;
@@ -67,6 +70,7 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
     {
         if(labelled(d_label[v]) == 0)
         {
+            // v can be reached via forward edge
             if(d_flow[u*n+v] < d_capacity[u*n+v])
             {
                 int v_potential = min(potential(d_label[u]), d_capacity[u*n+v]-d_flow[u*n+v]);
@@ -75,6 +79,7 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
                 *d_flag += 1;
             }
 
+            // v can be reached by reducing the flow (backward edge)
             if(d_flow[v*n+u] > 0)
             {
                 int v_potential = min(potential(d_label[u]), d_flow[v*n+u]);
@@ -91,6 +96,7 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
 
 int fordFulkerson(int *capacity, int n, int s, int t)
 {
+    // flag variable is to show if any update is happening in an iteration
     int *flag = (int *)malloc(sizeof(int));
     int *flow = (int *)malloc(n*n*sizeof(int));
     memset(flow, 0, n*n*sizeof(int)); 
@@ -104,9 +110,9 @@ int fordFulkerson(int *capacity, int n, int s, int t)
     cudaMalloc(&d_flag, sizeof(int));
     int *d_flow;
     cudaMalloc(&d_flow, n*n*sizeof(int));
-    ll *d_label, *d_new_label;
-    cudaMalloc(&d_label, n*sizeof(ll));
-    cudaMalloc(&d_new_label, n*sizeof(ll));
+    ll *d_label1, *d_label2;
+    cudaMalloc(&d_label1, n*sizeof(ll));
+    cudaMalloc(&d_label2, n*sizeof(ll));
 
     cudaMemcpy(d_capacity, capacity, n*n*sizeof(int), cudaMemcpyHostToDevice);
 
@@ -120,20 +126,33 @@ int fordFulkerson(int *capacity, int n, int s, int t)
         label[s] = hash(INT_MAX, s, 1, 0, 0);
         // printf("label[s]: %lld\n", label[s]);
         cudaMemcpy(d_flow, flow, n*n*sizeof(int), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_new_label, label, n*sizeof(ll), cudaMemcpyHostToDevice);
-
+        cudaMemcpy(d_label1, label, n*sizeof(ll), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_label2, label, n*sizeof(ll), cudaMemcpyHostToDevice);
+        
+        bool even_iteration = true;
         // while sink is not yet labelled
         while(labelled(label[t]) == 0)
         {
             *flag = 0;
             cudaMemcpy(d_flag, flag, sizeof(int), cudaMemcpyHostToDevice);
-            cudaMemcpy(d_label, label, n*sizeof(ll), cudaMemcpyHostToDevice);
-            parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_label, d_new_label, d_flag, n);
+            if(even_iteration)
+            {
+                parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_label1, d_label2, d_flag, n);
+                cudaMemcpy(label, d_label2, n*sizeof(ll), cudaMemcpyDeviceToHost);
+            }
+            else
+            {
+                parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_label2, d_label1, d_flag, n);
+                cudaMemcpy(label, d_label1, n*sizeof(ll), cudaMemcpyDeviceToHost);
+            }
             // Not needed to copy all labels back and forth - If changed then this is to be added outside loop
-            cudaMemcpy(label, d_new_label, n*sizeof(ll), cudaMemcpyDeviceToHost);
+            even_iteration = !even_iteration;
             cudaMemcpy(flag, d_flag, sizeof(int), cudaMemcpyDeviceToHost);
 
             // printf("flag: %d\n", *flag);
+
+            // If no update has occured then sink can't be reached 
+            // i.e no augmenting path
             if(*flag == 0)
             {
                 break;
