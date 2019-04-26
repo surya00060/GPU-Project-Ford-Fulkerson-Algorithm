@@ -1,15 +1,10 @@
-// Dynamic parallelism used to avoid frequent memcopies between host and device. 
-// But further overhead introduced in terms of calling kernel from kernel.
-
 #include <math.h>
-#include <limits.h>
 #include <stdio.h>
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #define ll long long int
-#define max_nodes 512
-#include <time.h>
 
 __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned, int direction)
 {
@@ -57,72 +52,101 @@ __host__ __device__ int direction(ll hash_value)
 }
 
 
-__global__ void parallel_traverse(int u, int *d_flow, int *d_capacity, ll *d_label, bool *d_flag, int n)
+__global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll *d_new_label,  bool *d_flag, int n)
 {
-    int v = threadIdx.x;
-    if(u<n && v<n)
+    int u = blockIdx.x; int v = threadIdx.x;
+    
+	if(labelled(d_label[u]) == 1 && scanned(d_label[u]) == 0)
     {
-        // printf("u: %d, v: %d, d_label[u]: %lld\n", u, v, d_label[u]);
-        if(labelled(d_label[u]) == 1 && scanned(d_label[u]) == 0)
+        if(labelled(d_label[v]) == 0)
         {
-            if(labelled(d_label[v]) == 0)
+            if(d_flow[u*n+v] < d_capacity[u*n+v])
             {
-                if(d_flow[u*n+v] < d_capacity[u*n+v])
-                {
-                    int v_potential = min(potential(d_label[u]), d_capacity[u*n+v]-d_flow[u*n+v]);
-                    // labels[v] = {true, false, u, '+', v_potential};
-                    d_label[v] = hash(v_potential, u, 1, 0, 1);
-                    *d_flag = true;
-                }
-
-                if(d_flow[v*n+u] > 0)
-                {
-                    int v_potential = min(potential(d_label[u]), d_flow[v*n+u]);
-                    // labels[v] = {true, false, u, '-', v_potential};
-                    d_label[v] = hash(v_potential, u, 1, 0, 0); 
-                    *d_flag = true;                   
-                }
+                int v_potential = min(potential(d_label[u]), d_capacity[u*n+v]-d_flow[u*n+v]);
+                // labels[v] = {true, false, u, '+', v_potential};
+                d_new_label[v] = hash(v_potential, u, 1, 0, 1);
+                *d_flag = true;
             }
-            // Note __syncthreads() can be used only with the current kernel configuration as can only be performed on a single block
-            __syncthreads();
-            // scanned[u] = true;
-            d_label[u] |= 1<<1;
+
+            if(d_flow[v*n+u] > 0)
+            {
+                int v_potential = min(potential(d_label[u]), d_flow[v*n+u]);
+                // labels[v] = {true, false, u, '-', v_potential};
+                d_new_label[v] = hash(v_potential, u, 1, 0, 0); 
+                *d_flag = true;                   
+            }
         }
+        // scanned[u] = true;
+        d_new_label[u] = d_label[u] | 1<<1;
     }
 }
 
-__global__ void fordFulker(int *d_capacity, int *d_flow, ll *d_label, bool* d_augmentation_made, int n, int s, int t)
+__global__ void fordFulkerson(int *d_capacity, int *d_flow, ll *d_label, ll *d_new_label, bool *d_augmentation_made, int n, int s, int t)
 {
     d_label[s] = hash(INT_MAX, s, 1, 0, 0);
+	d_new_label[s] = hash(INT_MAX, s, 1, 0, 0);
 
+    bool even_iterations = true;
     *d_augmentation_made = true;
-    while((*d_augmentation_made) && labelled(d_label[t])==0)
+    while((*d_augmentation_made) && (labelled(d_label[t])==0 && labelled(d_new_label[t]) == 0))
     {
         *d_augmentation_made = false;
-        for( int i = 0; i < n; ++i)
-            parallel_traverse<<<1, n>>>(i, d_flow, d_capacity, d_label, d_augmentation_made, n);
-        //cudaDeviceSynchronize();
+        if (even_iterations)
+        {
+            parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_label, d_new_label, d_augmentation_made, n);
+            even_iterations = !even_iterations;
+            cudaDeviceSynchronize();
+        }
+        else
+        {
+            parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_new_label, d_label, d_augmentation_made, n);
+            even_iterations = !even_iterations;
+            cudaDeviceSynchronize();
+        }
     }
 
     if(*d_augmentation_made)
     {
-        int x = t, y, t_potential = potential(d_label[t]);
-        while( x != s)
+        if (even_iterations)
         {
-            y = parent(d_label[x]); 
+            int x = t, y, t_potential = potential(d_label[t]);
+            while( x != s)
+            {
+                y = parent(d_label[x]); 
 
-            if(direction(d_label[x]) == 1)
-            {
-                d_flow[y*n+x] += t_potential;
+                if(direction(d_label[x]) == 1)
+                {
+                    d_flow[y*n+x] += t_potential;
+                }
+                else
+                {
+                    d_flow[x*n+y] -= t_potential;
+                }   
+                x = y;
             }
-            else
+        }
+        else
+        {
+            int x = t, y, t_potential = potential(d_new_label[t]);
+            while( x != s)
             {
-                d_flow[x*n+y] -= t_potential;
+                y = parent(d_new_label[x]); 
+
+                if(direction(d_new_label[x]) == 1)
+                {
+                    d_flow[y*n+x] += t_potential;
+                }
+                else
+                {
+                    d_flow[x*n+y] -= t_potential;
+                }   
+                x = y;
             }
-            x = y;
         }
     }
+
 }
+
 int main()
 {
     int n, m;
@@ -137,7 +161,7 @@ int main()
         scanf("%d %d %d", &u, &v, &w);
         capacity[u*n+v] = w; 
     }
-    
+
     int *flow = (int *)malloc(n*n*sizeof(int));
     memset(flow, 0, n*n*sizeof(int)); 
 
@@ -154,6 +178,9 @@ int main()
     ll *d_label;
     cudaMalloc(&d_label, n*sizeof(ll)); 
     
+	ll *d_new_label;
+	cudaMalloc(&d_new_label, n*sizeof(ll));
+
     bool h_augmentation_made;
     bool *d_augmentation_made; cudaMalloc((void**)&d_augmentation_made, sizeof(bool));
 
@@ -162,10 +189,11 @@ int main()
     while(h_augmentation_made)
     {
         cudaMemset(d_label, 0, n*sizeof(ll)); 
+		cudaMemset(d_new_label, 0, n*sizeof(ll));
         h_augmentation_made = false;
         cudaMemset(d_augmentation_made, 0, sizeof(bool));
             
-        fordFulker<<<1,1>>>(d_capacity, d_flow, d_label, d_augmentation_made, n, 0, n-1);
+        fordFulkerson<<<1,1>>>(d_capacity, d_flow, d_label, d_new_label, d_augmentation_made, n, 0, n-1);
         cudaMemcpy(&h_augmentation_made, d_augmentation_made, sizeof(bool), cudaMemcpyDeviceToHost);
     }
     
@@ -176,7 +204,7 @@ int main()
     {
         net_flow += flow[0*n+i];
     }
-
-	printf("%d\n",net_flow);
+    
+    printf("%d\n", net_flow);
 	return 0;
 }
