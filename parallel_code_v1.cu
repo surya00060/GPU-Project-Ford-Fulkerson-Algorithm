@@ -10,6 +10,9 @@
 #include <stdbool.h>
 #define ll long long int
 
+// hashing used to update all of the attributes of a node at the same time
+// This is to avoid race conditions as multiple u's could try to label a particular neighbour
+// Using a mutex lock instead would severely affect performance as threads would be in busy wait
 __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned, int direction)
 {
     // potential can take any integer values
@@ -30,6 +33,9 @@ __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned
     return hash_value;
 }
 
+
+// The following functions return the corresponding field 
+// in the hashed value using bitwise operations.
 __host__ __device__ int potential(ll hash_value)
 {
     return hash_value>>13;
@@ -56,9 +62,9 @@ __host__ __device__ int direction(ll hash_value)
 }
 
 // Note: Using the same u potential multiple nodes can be assigned potentials, but eventually no more than one of them will be in the path.
-// There is frequent context switch between cpu and gpu, try improving that by moving the loop inside kernel
-// Some of the device arrays are constants --- Check if improvement possible if they are changed accordingly
+// There is frequent context switch between cpu and gpu, try improving that by moving the loop inside kernel -- dynamic parallelism performed.
 
+// Kernel tries to expand the frontier by one step ... frontier is the collection of nodes who had just been labelled in the previous iteration.
 __global__ void parallel_traverse(int u, int *d_flow, int *d_capacity, ll *d_label, int *d_flag, int n)
 {
     int v = threadIdx.x;
@@ -67,6 +73,7 @@ __global__ void parallel_traverse(int u, int *d_flow, int *d_capacity, ll *d_lab
     {
         if(labelled(d_label[v]) == 0)
         {
+            // v can be reached via forward edge
             if(d_flow[u*n+v] < d_capacity[u*n+v])
             {
                 int v_potential = min(potential(d_label[u]), d_capacity[u*n+v]-d_flow[u*n+v]);
@@ -75,6 +82,7 @@ __global__ void parallel_traverse(int u, int *d_flow, int *d_capacity, ll *d_lab
                 *d_flag += 1;
             }
 
+            // v can be reached by reducing the flow (backward edge)
             if(d_flow[v*n+u] > 0)
             {
                 int v_potential = min(potential(d_label[u]), d_flow[v*n+u]);
@@ -94,6 +102,7 @@ __global__ void parallel_traverse(int u, int *d_flow, int *d_capacity, ll *d_lab
 
 int fordFulkerson(int *capacity, int n, int s, int t)
 {
+    // flag variable is to show if any update is happening in an iteration
     int *flag = (int *)malloc(sizeof(int));
     int *flow = (int *)malloc(n*n*sizeof(int));
     memset(flow, 0, n*n*sizeof(int)); 
@@ -133,7 +142,6 @@ int fordFulkerson(int *capacity, int n, int s, int t)
             {
                 parallel_traverse<<<1, n>>>(i, d_flow, d_capacity, d_label, d_flag, n);
             }
-            // Not needed to copy all labels back and forth - If changed then this is to be added outside loop
             cudaMemcpy(label, d_label, n*sizeof(ll), cudaMemcpyDeviceToHost);
             cudaMemcpy(flag, d_flag, sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -149,14 +157,17 @@ int fordFulkerson(int *capacity, int n, int s, int t)
 
         if(*flag == 0)
         {
+            // No more augmenting paths can be found
             int net_flow = 0;
             for(int i=0;i<n;++i)
             {
                 net_flow += flow[s*n+i];
             }
+            // Returning sum of flows originating from source
             return net_flow;
         }
 
+        // Potential of sink is the bottleneck flow through the augmenting path
         int x = t, y, t_potential = potential(label[t]);
         // printf("%d\n", t_potential);
         while(x != s)
@@ -165,6 +176,7 @@ int fordFulkerson(int *capacity, int n, int s, int t)
             // Getting bits from 3 to 13 - y = parent[x]
             y = parent(label[x]); 
 
+            // Updating all flow values on the path depending on the direction of the link
             // if(labels[x].direction == '+')
             if(direction(label[x]) == 1)
             {
@@ -186,6 +198,7 @@ int main()
     int n, m;
     scanf("%d %d", &n, &m);
 
+    // 1-D arrays to pass the same to the kernel
     int *capacity = (int *)malloc(n*n*sizeof(int));
     memset(capacity, 0, n*n*sizeof(int)); 
 

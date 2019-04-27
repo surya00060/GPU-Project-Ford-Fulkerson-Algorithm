@@ -11,6 +11,9 @@
 #include <stdbool.h>
 #define ll long long int
 
+// hashing used to update all of the attributes of a node at the same time
+// This is to avoid race conditions as multiple u's could try to label a particular neighbour
+// Using a mutex lock instead would severely affect performance as threads would be in busy wait
 __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned, int direction)
 {
     // potential can take any integer values
@@ -110,6 +113,8 @@ int fordFulkerson(int *capacity, int n, int s, int t)
     cudaMalloc(&d_flag, sizeof(int));
     int *d_flow;
     cudaMalloc(&d_flow, n*n*sizeof(int));
+    // Two labels interchangeably passed to the kernel depending on the iteration parity
+    // Needed to avoid a memcpy to update the old label value
     ll *d_label1, *d_label2;
     cudaMalloc(&d_label1, n*sizeof(ll));
     cudaMalloc(&d_label2, n*sizeof(ll));
@@ -120,6 +125,7 @@ int fordFulkerson(int *capacity, int n, int s, int t)
     {
         memset(label, 0, n*sizeof(ll)); 
 
+        // Initializing source
         // labelled[s] = true;
         // direction[s] = '+';
         // potential[s] = INT_MAX;
@@ -145,7 +151,6 @@ int fordFulkerson(int *capacity, int n, int s, int t)
                 parallel_traverse<<<n, n>>>(d_flow, d_capacity, d_label2, d_label1, d_flag, n);
                 cudaMemcpy(label, d_label1, n*sizeof(ll), cudaMemcpyDeviceToHost);
             }
-            // Not needed to copy all labels back and forth - If changed then this is to be added outside loop
             even_iteration = !even_iteration;
             cudaMemcpy(flag, d_flag, sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -164,14 +169,17 @@ int fordFulkerson(int *capacity, int n, int s, int t)
 
         if(*flag == 0)
         {
+            // No more augmenting paths can be found
             int net_flow = 0;
             for(int i=0;i<n;++i)
             {
                 net_flow += flow[s*n+i];
             }
+            // Returning sum of flows originating from source
             return net_flow;
         }
 
+        // Potential of sink is the bottleneck flow through the augmenting path
         int x = t, y, t_potential = potential(label[t]);
         // printf("%d\n", t_potential);
         while(x != s)
@@ -180,6 +188,7 @@ int fordFulkerson(int *capacity, int n, int s, int t)
             // Getting bits from 3 to 13 - y = parent[x]
             y = parent(label[x]); 
 
+            // Updating all flow values on the path depending on the direction of the link
             // if(labels[x].direction == '+')
             if(direction(label[x]) == 1)
             {
@@ -201,6 +210,7 @@ int main()
     int n, m;
     scanf("%d %d", &n, &m);
 
+    // 1-D arrays to pass the same to the kernel
     int *capacity = (int *)malloc(n*n*sizeof(int));
     memset(capacity, 0, n*n*sizeof(int)); 
 

@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #define ll long long int
 
+// hashing used to update all of the attributes of a node at the same time
+// This is to avoid race conditions as multiple u's could try to label a particular neighbour
+// Using a mutex lock instead would severely affect performance as threads would be in busy wait
 __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned, int direction)
 {
     // potential can take any integer values
@@ -26,6 +29,9 @@ __host__ __device__ ll hash(int potential, int parent, int labelled, int scanned
     return hash_value;
 }
 
+
+// The following functions return the corresponding field 
+// in the hashed value using bitwise operations.
 __host__ __device__ int potential(ll hash_value)
 {
     return hash_value>>13;
@@ -51,7 +57,9 @@ __host__ __device__ int direction(ll hash_value)
     return (hash_value)&1;
 }
 
+// Note: Using the same u potential multiple nodes can be assigned potentials, but eventually no more than one of them will be in the path.
 
+// Kernel tries to expand the frontier by one step ... frontier is the collection of nodes who had just been labelled in the previous iteration.
 __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll *d_new_label,  bool *d_flag, int n)
 {
     int u = blockIdx.x; int v = threadIdx.x;
@@ -60,6 +68,7 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
     {
         if(labelled(d_label[v]) == 0)
         {
+            // v can be reached via forward edge
             if(d_flow[u*n+v] < d_capacity[u*n+v])
             {
                 int v_potential = min(potential(d_label[u]), d_capacity[u*n+v]-d_flow[u*n+v]);
@@ -68,6 +77,7 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
                 *d_flag = true;
             }
 
+            // v can be reached by reducing the flow (backward edge)
             if(d_flow[v*n+u] > 0)
             {
                 int v_potential = min(potential(d_label[u]), d_flow[v*n+u]);
@@ -83,11 +93,16 @@ __global__ void parallel_traverse(int *d_flow, int *d_capacity, ll *d_label, ll 
 
 __global__ void fordFulkerson(int *d_capacity, int *d_flow, ll *d_label, ll *d_new_label, bool *d_augmentation_made, int n, int s, int t)
 {
+    // Initializing source
+    // labelled[s] = true;
+    // direction[s] = '+';
+    // potential[s] = INT_MAX;
     d_label[s] = hash(INT_MAX, s, 1, 0, 0);
 	d_new_label[s] = hash(INT_MAX, s, 1, 0, 0);
 
     bool even_iterations = true;
     *d_augmentation_made = true;
+    // while sink is not yet labelled
     while((*d_augmentation_made) && (labelled(d_label[t])==0 && labelled(d_new_label[t]) == 0))
     {
         *d_augmentation_made = false;
@@ -109,11 +124,13 @@ __global__ void fordFulkerson(int *d_capacity, int *d_flow, ll *d_label, ll *d_n
     {
         if (even_iterations)
         {
+            // Potential of sink is the bottleneck flow through the augmenting path
             int x = t, y, t_potential = potential(d_label[t]);
             while( x != s)
             {
                 y = parent(d_label[x]); 
 
+                // Updating all flow values on the path depending on the direction of the link
                 if(direction(d_label[x]) == 1)
                 {
                     d_flow[y*n+x] += t_potential;
@@ -127,11 +144,13 @@ __global__ void fordFulkerson(int *d_capacity, int *d_flow, ll *d_label, ll *d_n
         }
         else
         {
+            // Potential of sink is the bottleneck flow through the augmenting path
             int x = t, y, t_potential = potential(d_new_label[t]);
             while( x != s)
             {
                 y = parent(d_new_label[x]); 
 
+                // Updating all flow values on the path depending on the direction of the link
                 if(direction(d_new_label[x]) == 1)
                 {
                     d_flow[y*n+x] += t_potential;
@@ -152,6 +171,7 @@ int main()
     int n, m;
     scanf("%d %d", &n, &m);
 
+    // 1-D arrays to pass the same to the kernel
     int *capacity = (int *)malloc(n*n*sizeof(int));
     memset(capacity, 0, n*n*sizeof(int)); 
 
@@ -175,6 +195,8 @@ int main()
     int *d_flow;
     cudaMalloc(&d_flow, n*n*sizeof(int));
     
+    // Two labels interchangeably passed to the kernel depending on the iteration parity
+    // Needed to avoid a memcpy to update the old label value
     ll *d_label;
     cudaMalloc(&d_label, n*sizeof(ll)); 
     
@@ -202,9 +224,11 @@ int main()
     int net_flow = 0;
     for(int i=0;i<n;++i)
     {
+        // No more augmenting paths can be found
         net_flow += flow[0*n+i];
     }
     
+    // Printing sum of flows originating from source
     printf("%d\n", net_flow);
 	return 0;
 }
