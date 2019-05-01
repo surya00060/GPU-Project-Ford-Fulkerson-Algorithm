@@ -2,8 +2,6 @@
 
 Serial and parallel versions of the code have been attached along with the files used to test correctness.
 
-parallel_code_v3.cu code is optimised and gives good speedup compared to v1 and v2.
-
 ### To Generate Testcases
 g++ generate_test_cases.cpp -std=c++11
 ./a.out > <output_file>  
