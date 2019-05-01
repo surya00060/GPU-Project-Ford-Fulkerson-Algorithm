@@ -6,7 +6,7 @@ parallel_code_v3.cu code is best optimised and gives good speedup.
 
 ### To Generate Testcases
 g++ generate_test_cases.cpp -std=c++11
-./a.out > tc1
+./a.out > <output_file>
 
 Modify the generate_test_cases.cpp to generate testcases with different number of vertices and edges.
 
